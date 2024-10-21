@@ -1,0 +1,12 @@
+version: "3.4"
+services:
+  service_db:
+    container_name: docker_rob
+    image: docker_rob
+    ports:
+      - "5432:5432"
+    
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
