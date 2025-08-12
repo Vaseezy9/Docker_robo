@@ -1,0 +1,87 @@
+#!/bin/bash
+
+# Проверка наличия аргумента конфигурационного файла
+if [ $# -ne 1 ]; then
+    echo "Использование: $0 /путь/к/файлу/настроек.config"
+    exit 1
+fi
+
+CONFIG_FILE="$1"
+
+# Проверка существования конфигурационного файла
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [ERROR] Конфигурационный файл не найден: $CONFIG_FILE"
+    exit 1
+fi
+
+# Загрузка конфигурации
+source "$CONFIG_FILE"
+
+# Проверка обязательных параметров
+if [ -z "$DB_HOST" ] || [ -z "$DB_USER" ] || [ -z "$DB_PASS" ] || [ -z "$DB_BASE" ] || [ -z "$BACKUP_PATH" ] || [ -z "$BACKUP_PREFIX" ] || [ -z "$BACKUP_COUNT" ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [ERROR] Не все обязательные параметры указаны в конфигурационном файле"
+    exit 1
+fi
+
+# Создание имени файла резервной копии
+TIMESTAMP=$(date '+%Y.%m.%d_%H%M%S')
+BACKUP_FILE="$BACKUP_PATH/${BACKUP_PREFIX}.${TIMESTAMP}.tar.gz"
+LOG_FILE="$BACKUP_PATH/${BACKUP_PREFIX}.${TIMESTAMP}.log"
+
+# Функция для записи в лог и stdout
+log_message() {
+    local message="$1"
+    local level="${2:-INFO}"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "$timestamp [$level] $message" | tee -a "$LOG_FILE"
+}
+
+# Создание директории для резервных копий, если она не существует
+mkdir -p "$BACKUP_PATH"
+
+# Начало процедуры резервного копирования
+log_message "Начало резервного копирования базы данных $DB_BASE"
+
+# Проверка свободного места (минимум 100MB)
+FREE_SPACE=$(df "$BACKUP_PATH" | awk 'NR==2 {print $4}')
+if [ "$FREE_SPACE" -lt 102400 ]; then
+    log_message "Недостаточно свободного места на диске" "ERROR"
+    exit 1
+fi
+
+# Создание резервной копии
+export PGPASSWORD="$DB_PASS"
+pg_dump -h "$DB_HOST" -U "$DB_USER" -d "$DB_BASE" -F t 2>>"$LOG_FILE" | gzip > "$BACKUP_FILE"
+
+# Проверка успешности создания резервной копии
+if [ ${PIPESTATUS[0]} -ne 0 ] || [ ! -f "$BACKUP_FILE" ]; then
+    log_message "Ошибка создания резервной копии базы данных" "ERROR"
+    # Проверка типа ошибки
+    if ! pg_isready -h "$DB_HOST" -U "$DB_USER" >/dev/null 2>&1; then
+        log_message "Ошибка соединения с сервером PostgreSQL" "ERROR"
+    fi
+    exit 1
+fi
+
+# Проверка размера созданного файла
+if [ ! -s "$BACKUP_FILE" ]; then
+    log_message "Созданный файл резервной копии пуст" "ERROR"
+    exit 1
+fi
+
+log_message "Резервная копия успешно создана: $BACKUP_FILE"
+
+# Удаление старых резервных копий
+BACKUP_COUNT_ACTUAL=$(ls -1 "$BACKUP_PATH"/${BACKUP_PREFIX}.*.tar.gz 2>/dev/null | wc -l)
+if [ "$BACKUP_COUNT_ACTUAL" -gt "$BACKUP_COUNT" ]; then
+    log_message "Удаление старых резервных копий (текущее количество: $BACKUP_COUNT_ACTUAL, максимальное: $BACKUP_COUNT)"
+    ls -1t "$BACKUP_PATH"/${BACKUP_PREFIX}.*.tar.gz 2>/dev/null | tail -n +$((BACKUP_COUNT+1)) | while read -r old_backup; do
+        rm -f "$old_backup"
+        log_message "Удалена старая резервная копия: $old_backup"
+    done
+fi
+
+# Завершение процедуры резервного копирования
+log_message "Завершение резервного копирования базы данных $DB_BASE"
+
+exit 0
