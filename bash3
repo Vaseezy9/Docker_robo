@@ -1,0 +1,102 @@
+#!/bin/bash
+
+# Проверка аргументов
+if [ $# -ne 1 ]; then
+    echo "Использование: $0 /путь/к/файлу/настроек.config"
+    exit 1
+fi
+
+# Загрузка конфигурации
+CONFIG_FILE=$1
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "Ошибка: файл конфигурации не найден"
+    exit 1
+fi
+
+source "$CONFIG_FILE"
+
+# Создание имени файла с временной меткой
+TIMESTAMP=$(date +"%Y.%m.%d_%H%M%S")
+BACKUP_FILE="${BACKUP_PATH}/${BACKUP_PREFIX}.${TIMESTAMP}.tar.gz"
+LOG_FILE="${BACKUP_PATH}/${BACKUP_PREFIX}.${TIMESTAMP}.log"
+
+# Функция логирования
+log_message() {
+    local MESSAGE="$(date '+%Y-%m-%d %H:%M:%S') $1"
+    echo "$MESSAGE" | tee -a "$LOG_FILE"
+}
+
+# Функция обработки ошибок
+handle_error() {
+    local ERROR_TYPE=$1
+    local ERROR_MESSAGE=$2
+    log_message "ОШИБКА [$ERROR_TYPE]: $ERROR_MESSAGE"
+    exit 1
+}
+
+# Проверка наличия необходимых переменных
+if [ -z "$DB_HOST" ] || [ -z "$DB_USER" ] || [ -z "$DB_PASS" ] || [ -z "$DB_BASE" ] ||
+    [ -z "$BACKUP_PATH" ] || [ -z "$BACKUP_PREFIX" ] || [ -z "$BACKUP_COUNT" ]; then
+    handle_error "CONFIG" "Не все параметры конфигурации заданы"
+fi
+
+# Проверка существования каталога резервных копий
+if [ ! -d "$BACKUP_PATH" ]; then
+    handle_error "FILESYSTEM" "Каталог резервных копий не существует: $BACKUP_PATH"
+fi
+
+# Проверка свободного места (минимум 2GB)
+FREE_SPACE=$(df "$BACKUP_PATH" | awk 'NR==2 {print $4}')
+if [ $FREE_SPACE -lt 2097152 ]; then
+    handle_error "DISK_SPACE" "Недостаточно свободного места в $BACKUP_PATH"
+fi
+
+# Начало резервного копирования
+log_message "Начало резервного копирования базы данных $DB_BASE"
+log_message "Подключение к серверу $DB_HOST под пользователем $DB_USER"
+
+# Экспорт переменной окружения для пароля
+export PGPASSWORD="$DB_PASS"
+
+# Создание резервной копии
+pg_dump -h "$DB_HOST" -U "$DB_USER" -d "$DB_BASE" -F t | gzip > "$BACKUP_FILE" 2>> "$LOG_FILE"
+DUMP_EXIT_CODE=$?
+
+if [ $DUMP_EXIT_CODE -ne 0 ]; then
+    handle_error "POSTGRES" "Ошибка при создании резервной копии базы данных"
+fi
+
+# Проверка успешности создания файла
+if [ ! -f "$BACKUP_FILE" ]; then
+    handle_error "FILESYSTEM" "Файл резервной копии не был создан"
+fi
+
+# Получение размера файла
+FILE_SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
+log_message "Резервная копия успешно создана (размер: $FILE_SIZE)"
+
+# Управление количеством резервных копий
+log_message "Проверка количества резервных копий в каталоге $BACKUP_PATH"
+BACKUP_COUNT_CURRENT=$(find "$BACKUP_PATH" -name "${BACKUP_PREFIX}.*.tar.gz" | wc -l)
+log_message "Найдено $BACKUP_COUNT_CURRENT копий"
+
+if [ $BACKUP_COUNT_CURRENT -gt $BACKUP_COUNT ]; then
+    EXCESS_COUNT=$(($BACKUP_COUNT_CURRENT - $BACKUP_COUNT))
+    log_message "Удаление $EXCESS_COUNT самых старых файлов"
+    find "$BACKUP_PATH" -name "${BACKUP_PREFIX}.*.tar.gz" -type f -printf '%T@ %p\n' | \
+        sort -n | head -n $EXCESS_COUNT | cut -d' ' -f2- | \
+        while read -r FILE; do
+            log_message "Удален файл $FILE"
+            rm "$FILE"
+        done
+fi
+
+log_message "Резервное копирование завершено успешно"
+
+
+5 1 * * 1-5 /path/to/backup-sql.sh /path/to/config.file
+
+Где backup-sql.bat - пакетный файл, запускающий bash-скрипт:
+
+@echo off
+bash C:\path\to\backup-sql.sh C:\path\to\config.file
