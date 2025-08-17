@@ -85,3 +85,8 @@ fi
 log_message "Завершение резервного копирования базы данных $DB_BASE"
 
 exit 0
+
+
+# Cron job 
+# crontab -e
+# 5 1 * * 1-5 /path/to/linux.txt /path/to/sql.config
